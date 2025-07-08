@@ -1,0 +1,164 @@
+---
+title: "Data set prep for PSOMER CAMP project"
+output: html_notebook
+---
+
+# Libraries
+
+It's important you know what each package is doing
+```{r}
+# for data manipulation and visualization
+library(tidyverse)
+
+# to help set the working directory and make this script reproducible across different machines
+library(here)
+
+# for the strobe diagram
+library(DiagrammeR)
+library(DiagrammeRsvg) 
+library(glue)
+library(rsvg)
+
+# for Table one
+library(tableone) 
+```
+
+## check the working directory- this should be the filepath to your project folder
+
+```{r}
+here::here()
+```
+
+# Methods
+
+## Study population and inclusion criteria
+
+This study identifies all....
+
+### Load in dataset
+
+Load in your dataset for your project. For this example, I am using an example dataset from: 
+
+https://archive.ics.uci.edu/dataset/45/heart+disease
+
+```{r}
+# you are unlikely to need col_names = FALSE
+heart_data <- read_csv(here("data", "processed.cleveland.data"), col_names = FALSE)
+
+# here I am labeling the columns- you might need to do this!
+column_names <- c(
+  "age", "sex", "cp", "trestbps", "chol", "fbs", "restecg",
+  "thalach", "exang", "oldpeak", "slope", "ca", "thal", "num"
+)
+
+heart_data <- heart_data %>%
+  setNames(column_names)
+```
+
+## Primary outcome
+
+The primary outcome of this study is the diagnosis of "any heart disease", defined as....
+```{r}
+# construct binary primary outcome of any_heart_disease from num > 0
+heart_data <- heart_data %>%
+  mutate(any_heart_disease = ifelse(num > 0, 1, 0))
+```
+
+# Exploratory data analysis
+
+This section won't go in your methods, but is essential to understand your dataset
+
+### view your dataset
+```{r}
+heart_data
+```
+
+## Descriptive statistics
+```{r}
+
+heart_data %>%
+  ggplot(aes(x = age)) +
+  geom_density(fill = "blue", alpha = 0.5)
+```
+```{r}
+heart_data %>%
+  group_by(any_heart_disease) %>%
+  ggplot(aes(x = age, fill = factor(any_heart_disease))) +
+  geom_density(alpha = 0.5)
+```
+
+
+### Define inclusion criteria and filter the dataset accordingly
+Track of the patients you exclude for your STROBE diagram
+```{r}
+
+```
+
+
+### Exclude patients who do not meet the inclusion criteria and save them in dataset
+
+```{r}
+excluded_patients <- data %>%
+  filter(inclusion == FALSE)
+```
+
+
+# Create a table one
+
+```{r}
+# Create a table one for the final cohort
+table_one <- CreateTableOne(data = heart_data)
+
+table_one
+```
+
+```{r}
+#export to results
+# Convert to data frame
+table_df <- as.data.frame(print(table_one, quote = FALSE, noSpaces = TRUE))
+
+# Write CSV
+write.csv(table_df, file = here("results", "table_one.csv"), row.names = TRUE)
+```
+
+### Make a strobe flow diagram with the exclusion reasons
+
+Use generative AI for this! Do NOT code it by hand
+
+```{r}
+
+```
+
+```{r}
+strobe_diagram <- grViz(glue("
+digraph flowchart {{
+  rankdir = TB;
+  node [shape = box, style = filled, fontname = Helvetica]
+  edge [fontname = Helvetica]
+
+  A [label = 'Initial cohort\\n(n = {total_n})', fillcolor = lightgray]
+    B [label = 'Excluded (n = {n_excluded})\\n{n_excl_age_low} Age < 30\\n{n_excl_age_high} Age > 70\\n{n_excl_cr_low} Creatinine < 0.5\\n{n_excl_cr_high} Creatinine > 1.5', fillcolor = lightblue]
+  C [label = 'Final cohort\\n(n = {final_n})', fillcolor = lightgray]
+  X [label = '', width=0, height=0, shape=point, style=invis]
+
+  A -> X [arrowhead=none]
+  X -> B
+  X -> C 
+
+  {{ rank = same; B; X }}
+}}
+"))
+
+strobe_diagram
+```
+
+```{r}
+#convert the DiagrammeR object to SVG
+svg <- export_svg(strobe_diagram)
+
+# Convert SVG to PDF and save it
+rsvg_pdf(charToRaw(svg), here("results", "strobe_diagram.pdf"))
+```
+
+
+

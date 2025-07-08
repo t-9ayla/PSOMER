@@ -1,0 +1,20 @@
+---
+title: "gitcreds_setup"
+output: html_document
+date: "2025-06-27"
+---
+
+```{r}
+install.packages("gitcreds")
+```
+
+# generate a personal access token from github
+
+https://github.com/settings/tokens
+
+# set the personal access token in R
+```{r}
+library(gitcreds)
+
+gitcreds_set()
+```
