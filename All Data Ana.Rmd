@@ -1,0 +1,581 @@
+---
+title: "Cardiogenic shock Call Data"
+output: html_notebook
+---
+
+```{r}
+# for data manipulation and visualization
+library(tidyverse)
+# for flexible paths and reproducible research
+library(here)
+library(tableone)
+library(dplyr)
+library(knitr)
+library(tidyr)
+library(ggplot2)
+library(kableExtra)
+library(stringr)
+
+```
+
+```{r}
+ # Load data
+Total_Data <- read_csv(here("data", "scdata.csv"), show_col_types = FALSE)
+Total_Data <- Total_Data %>% 
+  filter(if_any(everything(), ~ !is.na(.)))
+
+```
+
+## Data basics
+population stats of sex, age, diagnosis, and CS Stage
+```{r}
+# Load the data
+
+
+# Total participants
+n_total <- nrow(Total_Data)
+
+# Mean ± SD for age
+age_stats <- Total_Data %>%
+  summarise(
+    Mean = round(mean(age, na.rm = TRUE), 1),
+    SD = round(sd(age, na.rm = TRUE), 1)
+  ) %>%
+  mutate(Label = "Age (Mean ± SD)",
+         Value = paste0(Mean, " ± ", SD)) %>%
+  select(Label, Value)
+
+# Sex breakdown
+sex_counts <- Total_Data %>%
+  count(Sex) %>%
+  mutate(Percent = round(100 * n / sum(n), 1),
+         Label = paste("Sex:", Sex),
+         Value = paste0(n, " (", Percent, "%)")) %>%
+  select(Label, Value)
+
+# Diagnosis breakdown
+diagnosis_counts <- Total_Data %>%
+  count(Diagnosis) %>%
+  mutate(Label = paste("Diagnosis:", Diagnosis),
+         Percent = round(100 * n / sum(n), 1),
+         Value = paste0(n, " (", Percent, "%)")) %>%
+  select(Label, Value)
+
+# CS Stage breakdown (excluding NAs)
+cs_stage_counts <- Total_Data %>%
+  filter(!is.na(`CS Stage`)) %>%
+  count(`CS Stage`) %>%
+  mutate(Label = paste("CS Stage:", `CS Stage`),
+         Percent = round(100 * n / sum(n), 1),
+         Value = paste0(n, " (", Percent, "%)")) %>%
+  select(Label, Value)
+
+# Combine all into one summary table
+summary_table <- bind_rows(
+  tibble(Label = "Number of Participants", Value = paste0("n = ", n_total)),
+  age_stats,
+  sex_counts,
+  diagnosis_counts,
+  cs_stage_counts
+)
+
+# Display
+kable(summary_table, col.names = c("Variable", "Value"), caption = "Population Summary Table")
+
+```
+
+
+## CS Stage by CS, MCS, and Other
+This is the graph representation 
+```{r}
+# Step 1: Prepare summarized data with standard error (placeholder using sqrt(n))
+stage_summary <- Total_Data %>%
+  filter(!is.na(`CS Stage`), !is.na(Diagnosis)) %>%
+  count(Diagnosis, `CS Stage`) %>%
+  mutate(se = sqrt(n))
+
+# Step 2: Plot with error bars
+ggplot(stage_summary, aes(x = `CS Stage`, y = n, fill = Diagnosis)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_errorbar(aes(ymin = n - se, ymax = n + se),
+                position = position_dodge(width = 0.9),
+                width = 0.3,
+                color = "black") +
+  labs(
+    title = "Counts of CS Stage by Diagnosis + Standard Error",
+    x = "CS Stage",
+    y = "Number of Cases",
+    fill = "Diagnosis"
+  ) +
+  scale_fill_manual(values = c(
+    "CS" = "#800000",
+    "MCS" = "#A9A9A9"
+  )) +
+  theme_minimal()
+```
+This is the table representation.
+```{r}
+
+stage_by_diagnosis <- Total_Data %>%
+  filter(!is.na(`CS Stage`), !is.na(Diagnosis), Diagnosis != "Other") %>%  # 👈 excludes "Other"
+  count(Diagnosis, `CS Stage`) %>%
+  pivot_wider(names_from = `CS Stage`, values_from = n, values_fill = 0)
+
+
+stage_table_percent <- stage_by_diagnosis %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  rowwise() %>%
+  mutate(across(where(is.numeric), ~ paste0(.x, " (", round(100 * as.numeric(.x) / Total, 1), "%)"))) %>%
+  ungroup()
+
+chisq_matrix <- stage_by_diagnosis %>%
+  column_to_rownames("Diagnosis") %>%
+  as.matrix()
+
+# Use Fisher's Exact Test
+test_result <- fisher.test(chisq_matrix)
+p_value <- format.pval(test_result$p.value, digits = 3, eps = 0.001)
+
+library(knitr)
+library(kableExtra)
+
+caption_text <- paste("Distribution of CS Stage by Diagnosis (Excluding 'Other') — Fisher's Exact Test p =", p_value)
+
+
+kable(stage_table_percent, caption = caption_text) %>%
+  kable_styling()
+
+stage_summary %>% arrange(desc(se)) %>% head()
+
+```
+
+# Analyze Survival and Expiration by CS Stage
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+# Step 1: Filter to only CS Stage D and E, count, and compute percentages
+survival_by_cs_stage_table <- Total_Data %>%
+  filter(CS_Stage %in% c("D", "E"), !is.na(`Pt outcome`)) %>%
+  count(CS_Stage, `Pt outcome`) %>%
+  group_by(CS_Stage) %>%
+  mutate(percent = round(100 * n / sum(n), 1),
+         Label = paste0(n, " (", percent, "%)")) %>%
+  select(CS_Stage, `Pt outcome`, Label) %>%
+  pivot_wider(names_from = `Pt outcome`, values_from = Label, values_fill = "0 (0%)")
+
+# Step 2: Display table with counts and percentages
+kable(survival_by_cs_stage_table, caption = "Patient Outcome by CS Stage (D and E Only)")
+
+# Step 3: Prepare raw counts for test
+survival_matrix <- Total_Data %>%
+  filter(CS_Stage %in% c("D", "E"), !is.na(`Pt outcome`)) %>%
+  count(CS_Stage, `Pt outcome`) %>%
+  pivot_wider(names_from = `Pt outcome`, values_from = n, values_fill = 0) %>%
+  column_to_rownames("CS_Stage") %>%
+  as.matrix()
+
+# Step 4: Run test
+  test_result <- fisher.test(survival_matrix)
+  test_name <- "Fisher's Exact Test"
+
+
+# Step 5: Print p-value
+cat(paste0("\n\n**", test_name, " p-value: ", format(test_result$p.value, digits = 3), "**"))
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Step 1: Prepare data and calculate standard error
+plot_data <- Total_Data %>%
+  filter(CS_Stage %in% c("D", "E"), !is.na(`Pt outcome`)) %>%
+  count(CS_Stage, `Pt outcome`) %>%
+  group_by(CS_Stage) %>%
+  mutate(
+    percent = round(100 * n / sum(n), 1),
+    proportion = n / sum(n),
+    se = sqrt(proportion * (1 - proportion) / sum(n)) * 100
+  ) %>%
+  ungroup()
+
+# Step 2: Create the bar plot with error bars
+ggplot(plot_data, aes(x = CS_Stage, y = percent, fill = `Pt outcome`)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_errorbar(
+    aes(ymin = percent - se, ymax = percent + se),
+    width = 0.3,
+    position = position_dodge(width = 0.9),
+    color = "black"
+  ) +
+  labs(
+    title = "Patient Outcomes by CS Stage (D & E Only) + Standard Error",
+    x = "CS Stage",
+    y = "Percentage of Patients",
+    fill = "Outcome"
+  ) +
+  scale_fill_manual(values = c(
+    "expired" = "#800000",
+    "survived" = "#A9A9A9"
+  )) +
+  theme_minimal()
+
+
+```
+
+
+
+
+
+
+
+#Table representation of survival and expired by diagnosis
+Make a table with survival and expired on the y and then CS and MCS on the x
+```{r}
+# Your original full matrix
+fisher_matrix <- matrix(c(37, 24, 37, 12, 41, 23), ncol = 2, byrow = TRUE)
+rownames(fisher_matrix) <- c("CS", "MCS", "Other")
+colnames(fisher_matrix) <- c("expired", "survived")
+
+# Double-check structure
+print(fisher_matrix)
+
+# CS vs MCS
+cs_mcs_matrix <- fisher_matrix[c("CS", "MCS"), , drop = FALSE]
+fisher_cs_mcs <- fisher.test(cs_mcs_matrix)
+cat("Fisher's Exact Test (CS vs MCS): p =", round(fisher_cs_mcs$p.value, 3), "\n")
+
+# CS vs Other
+cs_other_matrix <- fisher_matrix[c("CS", "Other"), , drop = FALSE]
+fisher_cs_other <- fisher.test(cs_other_matrix)
+cat("Fisher's Exact Test (CS vs Other): p =", round(fisher_cs_other$p.value, 3), "\n")
+
+# MCS vs Other
+mcs_other_matrix <- fisher_matrix[c("MCS", "Other"), , drop = FALSE]
+fisher_mcs_other <- fisher.test(mcs_other_matrix)
+cat("Fisher's Exact Test (MCS vs Other): p =", round(fisher_mcs_other$p.value, 3), "\n")
+```
+```{r}
+# Step 1: Count and calculate percentages
+mortality_diagnosis_table <- Total_Data %>%
+  filter(!is.na(`Pt outcome`), !is.na(Diagnosis)) %>%
+  count(Diagnosis, `Pt outcome`) %>%
+  group_by(Diagnosis) %>%
+  mutate(Percent = round(100 * n / sum(n), 1)) %>%
+  ungroup() %>%
+  mutate(Label = paste0(n, " (", Percent, "%)")) %>%
+  select(Diagnosis, `Pt outcome`, Label) %>%
+  pivot_wider(names_from = `Pt outcome`, values_from = Label, values_fill = "0 (0%)")
+
+# Step 2: Display formatted table with percentages
+kable(mortality_diagnosis_table, caption = "Patient Outcomes by Diagnosis (Count and %)")
+
+# Step 3: Create matrix with raw counts for Fisher's test
+fisher_matrix <- Total_Data %>%
+  filter(!is.na(`Pt outcome`), !is.na(Diagnosis)) %>%
+  count(Diagnosis, `Pt outcome`) %>%
+  pivot_wider(names_from = `Pt outcome`, values_from = n, values_fill = 0) %>%
+  column_to_rownames("Diagnosis") %>%
+  as.matrix()
+
+# Step 4: Perform Fisher's Exact Test
+fisher_result <- fisher.test(fisher_matrix)
+
+# Step 5: Print test result
+print(fisher_result)
+```
+
+Graph representation of survival and expired by diagnosis
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Step 1: Prepare data with standard error
+plot_data <- Total_Data %>%
+  filter(!is.na(`Pt outcome`), !is.na(Diagnosis)) %>%
+  count(Diagnosis, `Pt outcome`) %>%
+  group_by(Diagnosis) %>%
+  mutate(
+    Total = sum(n),
+    Proportion = n / Total,
+    Percent = 100 * Proportion,
+    SE = sqrt(Proportion * (1 - Proportion) / Total) * 100,
+    ymin = Percent - SE,
+    ymax = Percent + SE
+  ) %>%
+  ungroup()
+
+# Step 2: Plot with error bars
+ggplot(plot_data, aes(x = Diagnosis, y = Percent, fill = `Pt outcome`)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9), width = 0.7) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax),
+                position = position_dodge(width = 0.9),
+                width = 0.2,
+                color = "black") +
+  labs(
+    title = "Patient Outcomes by Diagnosis + Standard Error",
+    x = "Diagnosis",
+    y = "Percentage of Patients",
+    fill = "Outcome"
+  ) +
+  scale_fill_manual(values = c(
+    "expired" = "#800000",
+    "survived" = "#A9A9A9"
+  )) +
+  theme_minimal()
+
+```
+
+
+# Tablle representation of Treatment by Diagnosis
+```{r}
+# List of treatment columns
+treatment_vars <- c("ECMO", "Impella", "Coronary angiography or PCI",
+  "RHC/hemodynamics", "TandemHeart",
+  "RVAD", "IABP", "Surgical LVAD", "Open heart"
+)
+# Convert "Y" to 1, "N" to 0
+Total_Data <- Total_Data %>%
+  mutate(across(all_of(treatment_vars), ~ case_when(
+    . == "Y" ~ 1,
+    . == "N" ~ 0,
+    TRUE ~ NA_real_
+  )))
+
+# Get all unique diagnoses
+diagnoses <- unique(na.omit(Total_Data$Diagnosis))
+
+# Create summary table
+summary_table <- data.frame()
+
+for (treatment_col in treatment_vars) {
+  # Filter and count
+  counts <- Total_Data %>%
+    filter(!is.na(Diagnosis), !is.na(.data[[treatment_col]])) %>%
+    group_by(Diagnosis) %>%
+    summarise(
+      n_total = n(),
+      n_yes = sum(.data[[treatment_col]] == 1),
+      .groups = "drop"
+    ) %>%
+    mutate(percent = round(100 * n_yes / n_total, 1),
+           label = paste0(n_yes, " (", percent, "%)")) %>%
+    select(Diagnosis, label)
+  
+  # Reshape to wide format
+  row <- pivot_wider(counts, names_from = Diagnosis, values_from = label)
+  row$Treatment <- treatment_col
+  
+  # Prepare matrix for statistical test
+  test_matrix <- Total_Data %>%
+    filter(!is.na(Diagnosis), !is.na(.data[[treatment_col]])) %>%
+    count(Diagnosis, .data[[treatment_col]]) %>%
+    pivot_wider(names_from = all_of(treatment_col), values_from = n, values_fill = 0) %>%
+    column_to_rownames("Diagnosis") %>%
+    as.matrix()
+  
+  # Run Fisher's Exact Test
+  if (ncol(test_matrix) == 2 && all(rowSums(test_matrix) > 0)) {
+    p_val <- round(fisher.test(test_matrix)$p.value, 3)
+  } else {
+    p_val <- NA
+  }
+  
+  row$p_value <- p_val
+  
+  # Append row to summary table
+  summary_table <- bind_rows(summary_table, row)
+}
+
+# Reorder columns: Treatment first, then diagnoses, then p-value
+diagnosis_cols <- diagnoses[diagnoses %in% colnames(summary_table)]
+summary_table <- summary_table %>%
+  select(Treatment, all_of(diagnosis_cols), p_value)
+
+# Display as table
+kable(summary_table, caption = "Treatment Usage by Diagnosis with Fisher's Exact Test p-values") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+Graph representation of Treatment by Diagnosis
+```{r}
+
+# Step 1: Extract percent values from summary_table (remove text like "12 (25%)")
+percent_data <- summary_table %>%
+  select(-p_value) %>%
+  pivot_longer(cols = -Treatment, names_to = "Diagnosis", values_to = "Label") %>%
+  mutate(
+    Percent = as.numeric(str_extract(Label, "(?<=\\().*?(?=%)"))  # Extract number inside the parentheses
+  )
+
+# Step 2: Plot grouped bar chart
+ggplot(percent_data, aes(x = Treatment, y = Percent, fill = Diagnosis)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Percent of Patients Receiving Each Treatment by Diagnosis",
+    x = "Treatment",
+    y = "Percent Receiving Treatment",
+    fill = "Diagnosis"
+  ) +
+  scale_fill_manual(values = c(
+    "CS" = "#800000",
+    "MCS" = "#A9A9A9",
+    "Other" = "#B46A55"
+  )) +
+  theme_minimal()+
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+```
+
+
+
+# Calculate Average Support per Diagnosis Type
+```{r}
+# Define relevant treatment columns to include in the support score
+treatment_cols <- c(
+  "ECMO", "Impella", "Coronary angiography or PCI", "RHC/hemodynamics",
+  "Open heart", "TandemHeart", "RVAD", "IABP", "Surgical LVAD", "transplant"
+)
+
+# Calculate support score for each patient
+# Convert 'Y' to 1 and others to 0 for selected treatment columns
+support_data_diagnosis <- Total_Data %>%
+  rowwise() %>%
+  mutate(support_score = sum(c_across(all_of(treatment_cols)) == "Y", na.rm = TRUE)) %>%
+  ungroup()
+
+# Calculate average support score and SE per Diagnosis Type
+avg_support_by_diagnosis <- support_data_diagnosis %>%
+  filter(!is.na(Diagnosis)) %>%
+  group_by(Diagnosis) %>%
+  summarise(
+    Average_Support = mean(support_score, na.rm = TRUE),
+    se = sd(support_score, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  arrange(Diagnosis)
+
+# Display the summary table
+knitr::kable(avg_support_by_diagnosis, caption = "Average Support Score by Diagnosis Type")
+
+# Perform ANOVA test
+anova_result_diagnosis <- aov(support_score ~ Diagnosis, data = support_data_diagnosis %>% filter(!is.na(Diagnosis)))
+
+# Print ANOVA summary
+cat("\n### ANOVA Test Results:\n")
+print(summary(anova_result_diagnosis))
+```
+
+#Graph
+```{r}
+# Create the bar plot
+support_plot_diagnosis <- ggplot(avg_support_by_diagnosis, aes(x = Diagnosis, y = Average_Support, fill = Diagnosis)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = Average_Support - se, ymax = Average_Support + se), width = 0.2, position = position_dodge(0.9)) +
+  labs(
+    title = "Average Number of Treatments per Patient by Diagnosis Type + Standard Error",
+    x = "Diagnosis Type",
+    y = "Average Number of Treatments"
+  ) +
+  scale_fill_manual(values = c(
+    "CS" = "#800000",
+    "MCS" = "#A9A9A9",
+    "Other" = "#D9D9D9"
+  )) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Print the plot to the HTML report
+print(support_plot_diagnosis)
+
+# Save the plot to a file
+ggsave(here("results", "average_support_by_diagnosis.png"), plot = support_plot_diagnosis, width = 8, height = 6, dpi = 300)
+
+```
+
+
+
+```{r}
+# Define treatment columns
+treatment_cols <- c(
+  "ECMO", "Impella", "Coronary angiography or PCI", "RHC/hemodynamics",
+  "Open heart", "TandemHeart", "RVAD", "IABP", "Surgical LVAD", "transplant"
+)
+
+# Step 1: Create per-patient support score
+support_data_stage <- Total_Data %>%
+  rowwise() %>%
+  mutate(support_score = sum(c_across(all_of(treatment_cols)) == "Y", na.rm = TRUE)) %>%
+  ungroup() %>%
+  filter(CS_Stage %in% c("D", "E"))  # Keep only CS stages D and E
+
+# Step 2: Summary table with mean and SE
+support_data_stage %>%
+  group_by(CS_Stage) %>%
+  summarise(
+    `Average Number of Treatments` = mean(support_score, na.rm = TRUE),
+    `Standard Error (SE)` = sd(support_score, na.rm = TRUE) / sqrt(n())
+  ) %>%
+  rename(`CS Stage` = CS_Stage) %>%
+  knitr::kable(
+    caption = "Table: Average Number of Treatments per Patient with Standard Error for CS Stages D and E",
+    digits = 2
+  )
+
+# Step 3: Run ANOVA
+anova_result <- aov(support_score ~ CS_Stage, data = support_data_stage)
+
+# Step 4: Print p-value
+cat("\n### ANOVA Test Results (CS Stage D vs E):\n")
+print(summary(anova_result))
+```
+
+
+```{r}
+# Calculate Average Support per CS Stage
+# Filter only stages C and D
+filtered_data <- avg_support_by_cs_stage %>%
+  filter(CS_Stage %in% c("E", "D"))
+
+# Create the bar plot
+support_plot <- ggplot(filtered_data, aes(x = CS_Stage, y = Average_Support, fill = CS_Stage)) +
+  geom_bar(stat = "identity") +
+  geom_errorbar(aes(ymin = Average_Support - se, ymax = Average_Support + se), 
+                width = 0.2, position = position_dodge(0.9)) +
+  labs(
+    title = "Average Number of Treatments per Patient (CS Stage D & E)",
+    x = "CS Stage",
+    y = "Average Number of Treatments"
+  ) +
+   scale_fill_manual(values = c(
+    "E" = "#800000",
+    "D" = "#A9A9A9"
+  )) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Print the plot
+print(support_plot)
+
+# Save the plot
+ggsave(here("results", "average_support_by_cs_stage_C_D.png"), 
+       plot = support_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+
+
+
+
+
+
+
+
